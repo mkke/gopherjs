@@ -258,6 +258,11 @@ func (i PackageInstanceSets) allExhausted() bool {
 }
 
 // Pkg returns InstanceSet for objects defined in the given package.
+//
+// During the collection phase, this lazily creates entries for new packages.
+// After collection is complete and before parallel compilation, callers
+// should pre-populate entries for all packages via EnsurePkg to avoid
+// concurrent map writes.
 func (i PackageInstanceSets) Pkg(pkg *types.Package) *InstanceSet {
 	path := pkg.Path()
 	iset, ok := i[path]
@@ -266,6 +271,16 @@ func (i PackageInstanceSets) Pkg(pkg *types.Package) *InstanceSet {
 		i[path] = iset
 	}
 	return iset
+}
+
+// PkgRead returns the InstanceSet for a package without modifying the map.
+// Returns an empty set if the package has no instances. This is safe to call
+// concurrently from multiple goroutines.
+func (i PackageInstanceSets) PkgRead(pkg *types.Package) *InstanceSet {
+	if iset, ok := i[pkg.Path()]; ok {
+		return iset
+	}
+	return &InstanceSet{}
 }
 
 // Add instances to the appropriate package's set. Automatically initialized
@@ -281,4 +296,9 @@ func (i PackageInstanceSets) Add(instances ...Instance) {
 // See: InstanceSet.ID().
 func (i PackageInstanceSets) ID(inst Instance) int {
 	return i.Pkg(inst.Object.Pkg()).ID(inst)
+}
+
+// IDRead is a read-only version of ID safe for concurrent use.
+func (i PackageInstanceSets) IDRead(inst Instance) int {
+	return i.PkgRead(inst.Object.Pkg()).ID(inst)
 }

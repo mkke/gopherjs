@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,6 +27,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	log "github.com/sirupsen/logrus"
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/tools/go/buildutil"
 
 	"github.com/gopherjs/gopherjs/build/cache"
@@ -1193,11 +1195,29 @@ func (s *Session) prepareAndCompilePackages(rootSrcs *sources.Sources) (*compile
 		return nil, err
 	}
 
-	// Compile all the sources into archives.
+	// Compile all the sources into archives in parallel.
+	// After PrepareAllSources, each Compile() operates on independent data.
+	var archivesMu sync.Mutex
+	g := new(errgroup.Group)
+	g.SetLimit(runtime.GOMAXPROCS(0))
 	for _, srcs := range allSources {
-		if _, err := s.compilePackage(srcs, tContext); err != nil {
-			return nil, err
-		}
+		srcs := srcs
+		g.Go(func() error {
+			archive, err := compiler.Compile(srcs, tContext, s.options.Minify)
+			if err != nil {
+				return err
+			}
+			archivesMu.Lock()
+			s.UpToDateArchives[srcs.ImportPath] = archive
+			archivesMu.Unlock()
+			if s.options.Verbose {
+				fmt.Println(srcs.ImportPath)
+			}
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 
 	rootArchive, ok := s.UpToDateArchives[rootSrcs.ImportPath]

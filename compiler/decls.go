@@ -461,7 +461,7 @@ func (fc *funcContext) namedTypeDecls(typeNames typesutil.TypeNames) ([]*Decl, e
 // the type definition directly.
 func (fc *funcContext) newNamedTypeVarDecl(obj *types.TypeName) *Decl {
 	name := fc.objectName(obj)
-	generic := fc.pkgCtx.instanceSet.Pkg(obj.Pkg()).ObjHasInstances(obj)
+	generic := fc.pkgCtx.instanceSet.PkgRead(obj.Pkg()).ObjHasInstances(obj)
 	varName := name
 	if generic {
 		varName += ` = []`

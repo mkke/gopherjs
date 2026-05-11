@@ -456,7 +456,7 @@ func (fc *funcContext) objectName(o types.Object) string {
 // If the object is generic, or in a generic function or method, but there are
 // no instances, then the object is unused and an empty list is returned.
 func (fc *funcContext) knownInstances(o types.Object) []typeparams.Instance {
-	instances := fc.pkgCtx.instanceSet.Pkg(o.Pkg()).ForObj(o)
+	instances := fc.pkgCtx.instanceSet.PkgRead(o.Pkg()).ForObj(o)
 	if len(instances) == 0 && !typeparams.HasTypeParams(o.Type()) {
 		return []typeparams.Instance{{Object: o}}
 	}
@@ -473,7 +473,7 @@ func (fc *funcContext) instName(inst typeparams.Instance) string {
 	}
 	fc.pkgCtx.DeclareDCEDep(inst.Object, inst.TNest, inst.TArgs)
 	label := inst.TypeParamsString(` /* `, ` */`)
-	return fmt.Sprintf("%s[%d%s]", objName, fc.pkgCtx.instanceSet.ID(inst), label)
+	return fmt.Sprintf("%s[%d%s]", objName, fc.pkgCtx.instanceSet.IDRead(inst), label)
 }
 
 // methodName returns a JS identifier (specifically, object property name)

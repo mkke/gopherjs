@@ -274,6 +274,12 @@ func PrepareAllSources(allSources []*sources.Sources, importer sources.Importer,
 	}
 	tc.Finish()
 
+	// Pre-populate instance sets for all packages so that Pkg() never writes
+	// to the map during parallel Compile() calls.
+	for _, srcs := range allSources {
+		instances.Pkg(srcs.Package)
+	}
+
 	// Analyze the package to determine type parameters instances, blocking,
 	// and other type information. This will not populate the information.
 	for _, srcs := range allSources {
