@@ -141,6 +141,7 @@ type InstanceSet struct {
 	values      []Instance
 	unprocessed int              // Index in values for the next unprocessed element.
 	seen        InstanceMap[int] // Maps instance to a unique numeric id.
+	byObj       map[types.Object][]Instance
 }
 
 // Add instances to the set. Instances that have been previously added to the
@@ -153,6 +154,10 @@ func (iset *InstanceSet) Add(instances ...Instance) *InstanceSet {
 		}
 		iset.seen.Set(inst, iset.seen.Len())
 		iset.values = append(iset.values, inst)
+		if iset.byObj == nil {
+			iset.byObj = map[types.Object][]Instance{}
+		}
+		iset.byObj[inst.Object] = append(iset.byObj[inst.Object], inst)
 	}
 	return iset
 }
@@ -213,34 +218,28 @@ func (iset *InstanceSet) Values() []Instance {
 
 // ByObj returns instances grouped by object they belong to. Order is not specified.
 func (iset *InstanceSet) ByObj() map[types.Object][]Instance {
-	result := map[types.Object][]Instance{}
-	for _, inst := range iset.values {
-		result[inst.Object] = append(result[inst.Object], inst)
+	if iset.byObj == nil {
+		return map[types.Object][]Instance{}
 	}
-	return result
+	return iset.byObj
 }
 
 // ForObj returns the instances that belong to the given object type.
 // Order is not specified. This returns the same values as `ByObj()[obj]`.
 func (iset *InstanceSet) ForObj(obj types.Object) []Instance {
-	result := []Instance{}
-	for _, inst := range iset.values {
-		if inst.Object == obj {
-			result = append(result, inst)
-		}
+	if iset.byObj == nil {
+		return nil
 	}
-	return result
+	return iset.byObj[obj]
 }
 
 // ObjHasInstances returns true if there are any instances (either trivial
 // or non-trivial) that belong to the given object type, otherwise false.
 func (iset *InstanceSet) ObjHasInstances(obj types.Object) bool {
-	for _, inst := range iset.values {
-		if inst.Object == obj {
-			return true
-		}
+	if iset.byObj == nil {
+		return false
 	}
-	return false
+	return len(iset.byObj[obj]) > 0
 }
 
 // PackageInstanceSets stores an InstanceSet for each package in a program, keyed
