@@ -5,8 +5,10 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"runtime"
 	"strings"
 
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/tools/go/types/typeutil"
 
 	"github.com/gopherjs/gopherjs/compiler/errlist"
@@ -250,16 +252,21 @@ func PrepareAllSources(allSources []*sources.Sources, importer sources.Importer,
 		}
 	}
 
-	// Extract all go:linkname compiler directives from the package source.
+	// ParseGoLinknames and Simplify are per-package independent after TypeCheck.
+	g := new(errgroup.Group)
+	g.SetLimit(runtime.GOMAXPROCS(0))
 	for _, srcs := range allSources {
-		if err := srcs.ParseGoLinknames(); err != nil {
-			return err
-		}
+		srcs := srcs
+		g.Go(func() error {
+			if err := srcs.ParseGoLinknames(); err != nil {
+				return err
+			}
+			srcs.Simplify()
+			return nil
+		})
 	}
-
-	// Simply the source files.
-	for _, srcs := range allSources {
-		srcs.Simplify()
+	if err := g.Wait(); err != nil {
+		return err
 	}
 
 	// Collect all the generic type instances from all the packages.
