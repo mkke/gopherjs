@@ -287,39 +287,32 @@ func (fc *funcContext) newVariable(name string, pkgLevel bool) string {
 	}
 	name = encodeIdent(name)
 	if fc.pkgCtx.minify {
-		i := 0
+		idx := &fc.nextMinifyLocal
+		if pkgLevel {
+			idx = &fc.nextMinifyPkg
+		}
 		for {
-			offset := int('a')
-			if pkgLevel {
-				offset = int('A')
-			}
-			j := i
-			name = ""
-			for {
-				name = string(rune(offset+(j%26))) + name
-				j = j/26 - 1
-				if j == -1 {
-					break
-				}
-			}
-			if fc.allVars[name] == 0 {
+			name = minifyName(*idx, pkgLevel)
+			*idx++
+			if fc.allVars.get(name) == 0 {
 				break
 			}
-			i++
 		}
 	}
-	n := fc.allVars[name]
-	fc.allVars[name] = n + 1
+	n := fc.allVars.get(name)
+	if pkgLevel {
+		fc.allVars.setPkgLevel(name, n+1)
+		varName := name
+		if n > 0 {
+			varName = fmt.Sprintf("%s$%d", name, n)
+		}
+		return varName
+	}
+
+	fc.allVars.set(name, n+1)
 	varName := name
 	if n > 0 {
 		varName = fmt.Sprintf("%s$%d", name, n)
-	}
-
-	if pkgLevel {
-		for c2 := fc.parent; c2 != nil; c2 = c2.parent {
-			c2.allVars[name] = n + 1
-		}
-		return varName
 	}
 
 	fc.localVars = append(fc.localVars, varName)

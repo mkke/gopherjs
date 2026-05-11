@@ -19,6 +19,9 @@ import (
 	"github.com/gopherjs/gopherjs/internal/sourcemapx"
 )
 
+// methodNameReplacer strips pointer receiver decoration from method full names.
+var methodNameReplacer = strings.NewReplacer("(", "", ")", "", "*", "")
+
 // nestedFunctionContext creates a new nested context for a function corresponding
 // to the provided info and instance.
 func (fc *funcContext) nestedFunctionContext(info *analysis.FuncInfo, inst typeparams.Instance) *funcContext {
@@ -32,21 +35,20 @@ func (fc *funcContext) nestedFunctionContext(info *analysis.FuncInfo, inst typep
 	sig := o.Type().(*types.Signature)
 
 	c := &funcContext{
-		FuncInfo:     info,
-		instance:     inst,
-		pkgCtx:       fc.pkgCtx,
-		parent:       fc,
-		allVars:      make(map[string]int, len(fc.allVars)),
-		localVars:    []string{},
-		flowDatas:    map[*types.Label]*flowData{nil: {}},
-		caseCounter:  1,
-		labelCases:   make(map[*types.Label]int),
-		typeResolver: fc.typeResolver,
-		objectNames:  map[types.Object]string{},
-		sig:          &typesutil.Signature{Sig: sig},
-	}
-	for k, v := range fc.allVars {
-		c.allVars[k] = v
+		FuncInfo:        info,
+		instance:        inst,
+		pkgCtx:          fc.pkgCtx,
+		parent:          fc,
+		allVars:         newVarScope(fc.allVars),
+		nextMinifyLocal: fc.nextMinifyLocal,
+		nextMinifyPkg:   fc.nextMinifyPkg,
+		localVars:       []string{},
+		flowDatas:       map[*types.Label]*flowData{nil: {}},
+		caseCounter:     1,
+		labelCases:      make(map[*types.Label]int),
+		typeResolver:    fc.typeResolver,
+		objectNames:     map[types.Object]string{},
+		sig:             &typesutil.Signature{Sig: sig},
 	}
 
 	// Use the parent function's resolver unless the function has it's own type arguments.
@@ -61,7 +63,7 @@ func (fc *funcContext) nestedFunctionContext(info *analysis.FuncInfo, inst typep
 	c.funcRef = sourcemapx.Identifier{
 		Name: c.newVariable(funcRef, true /*pkgLevel*/),
 		// o.FullName() decorates pointer receivers as `(*T).method`, we want simply `T.method`.
-		OriginalName: strings.NewReplacer("(", "", ")", "", "*", "").Replace(o.FullName()),
+		OriginalName: methodNameReplacer.Replace(o.FullName()),
 		OriginalPos:  o.Pos(),
 	}
 

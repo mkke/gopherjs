@@ -80,7 +80,11 @@ type funcContext struct {
 	// variable name and the value is the number of synonymous variable names
 	// visible from this scope (e.g. due to shadowing). This number is used to
 	// avoid conflicts when assigning JS variable names for Go variables.
-	allVars map[string]int
+	allVars *varScope
+	// Next minified name index to try for local and pkg-level variables.
+	// Avoids re-scanning all already-used indices from the parent scope.
+	nextMinifyLocal int
+	nextMinifyPkg   int
 	// Local JS variable names defined within this function context. This list
 	// contains JS variable names assigned to Go variables, as well as other
 	// auxiliary variables the compiler needs. It is used to generate `var`
@@ -119,6 +123,79 @@ type funcContext struct {
 	funcLitCounter int
 }
 
+// varScope tracks JavaScript variable names within a function scope, using a
+// parent-chain to avoid copying the entire map for each nested function.
+// Reads walk up the chain; writes only modify the local layer.
+type varScope struct {
+	parent *varScope
+	local  map[string]int
+}
+
+func newVarScope(parent *varScope) *varScope {
+	return &varScope{parent: parent, local: make(map[string]int, 4)}
+}
+
+func (vs *varScope) get(name string) int {
+	for s := vs; s != nil; s = s.parent {
+		if v, ok := s.local[name]; ok {
+			return v
+		}
+	}
+	return 0
+}
+
+func (vs *varScope) set(name string, v int) {
+	vs.local[name] = v
+}
+
+// setPkgLevel propagates a package-level variable count to this scope and all
+// ancestors, matching the semantics of the original allVars map copy.
+func (vs *varScope) setPkgLevel(name string, v int) {
+	for s := vs; s != nil; s = s.parent {
+		s.local[name] = v
+	}
+}
+
+// Pre-computed single-character minified names to avoid allocation.
+var (
+	minifyLower [26]string
+	minifyUpper [26]string
+)
+
+func init() {
+	for i := 0; i < 26; i++ {
+		minifyLower[i] = string(rune('a' + i))
+		minifyUpper[i] = string(rune('A' + i))
+	}
+}
+
+// minifyName generates a minified variable name for the given index.
+// For indices 0-25, returns pre-allocated single-char strings (zero allocation).
+func minifyName(index int, pkgLevel bool) string {
+	if index < 26 {
+		if pkgLevel {
+			return minifyUpper[index]
+		}
+		return minifyLower[index]
+	}
+	offset := byte('a')
+	if pkgLevel {
+		offset = byte('A')
+	}
+	var buf [8]byte
+	pos := len(buf)
+	j := index
+	for {
+		pos--
+		buf[pos] = offset + byte(j%26)
+		j = j/26 - 1
+		if j == -1 {
+			break
+		}
+	}
+	return string(buf[pos:])
+}
+
 func newRootCtx(tContext *types.Context, srcs *sources.Sources, minify bool) *funcContext {
 	funcCtx := &funcContext{
 		FuncInfo: srcs.TypeInfo.InitFuncInfo,
@@ -135,14 +212,14 @@ func newRootCtx(tContext *types.Context, srcs *sources.Sources, minify bool) *fu
 			fileSet:      srcs.FileSet,
 			instanceSet:  srcs.TypeInfo.InstanceSets,
 		},
-		allVars:     make(map[string]int),
+		allVars:     &varScope{local: make(map[string]int)},
 		flowDatas:   map[*types.Label]*flowData{nil: {}},
 		caseCounter: 1,
 		labelCases:  make(map[*types.Label]int),
 		objectNames: map[types.Object]string{},
 	}
 	for name := range reservedKeywords {
-		funcCtx.allVars[name] = 1
+		funcCtx.allVars.set(name, 1)
 	}
 	return funcCtx
 }
