@@ -3,11 +3,9 @@ package sourcemapx
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/gob"
 	"fmt"
 	"go/token"
 	"io"
-	"reflect"
 )
 
 // A magic byte in the generated code output that indicates a beginning of a
@@ -81,27 +79,29 @@ func (h *Hint) WriteTo(w io.Writer) (int64, error) {
 
 // Pack the given value into hint's payload.
 //
-// Supported types: go/token.Pos.
+// Supported types: go/token.Pos, Identifier.
 //
 // The first byte of the payload will indicate the encoded type, and the rest
 // is an opaque, type-dependent binary representation of the type.
 func (h *Hint) Pack(value any) error {
-	payload := &bytes.Buffer{}
-	// Write type flag.
-	switch value.(type) {
+	switch v := value.(type) {
 	case token.Pos:
-		payload.WriteByte(1)
+		// type flag (1 byte) + int32 (4 bytes)
+		h.Payload = binary.BigEndian.AppendUint32([]byte{1}, uint32(v))
 	case Identifier:
-		payload.WriteByte(2)
+		// type flag (1 byte) + pos (4 bytes) + name length (2 bytes) + name + origName length (2 bytes) + origName
+		size := 1 + 4 + 2 + len(v.Name) + 2 + len(v.OriginalName)
+		buf := make([]byte, 0, size)
+		buf = append(buf, 2)
+		buf = binary.BigEndian.AppendUint32(buf, uint32(v.OriginalPos))
+		buf = binary.BigEndian.AppendUint16(buf, uint16(len(v.Name)))
+		buf = append(buf, v.Name...)
+		buf = binary.BigEndian.AppendUint16(buf, uint16(len(v.OriginalName)))
+		buf = append(buf, v.OriginalName...)
+		h.Payload = buf
 	default:
 		return fmt.Errorf("unsupported hint payload type %T", value)
 	}
-
-	if err := gob.NewEncoder(payload).Encode(value); err != nil {
-		return fmt.Errorf("failed to encode hint payload: %w", err)
-	}
-
-	h.Payload = payload.Bytes()
 	return nil
 }
 
@@ -110,18 +110,44 @@ func (h *Hint) Unpack() (any, error) {
 	if len(h.Payload) < 1 {
 		return nil, fmt.Errorf("payload is too short to contain type flag")
 	}
-	var value any
 	switch h.Payload[0] {
 	case 1:
-		v := token.NoPos
-		value = &v
+		if len(h.Payload) < 5 {
+			return nil, fmt.Errorf("payload too short for token.Pos")
+		}
+		return token.Pos(binary.BigEndian.Uint32(h.Payload[1:5])), nil
 	case 2:
-		value = &Identifier{}
+		b := h.Payload[1:]
+		if len(b) < 4 {
+			return nil, fmt.Errorf("payload too short for Identifier")
+		}
+		pos := token.Pos(binary.BigEndian.Uint32(b[:4]))
+		b = b[4:]
+		if len(b) < 2 {
+			return nil, fmt.Errorf("payload too short for Identifier name length")
+		}
+		nameLen := int(binary.BigEndian.Uint16(b[:2]))
+		b = b[2:]
+		if len(b) < nameLen {
+			return nil, fmt.Errorf("payload too short for Identifier name")
+		}
+		name := string(b[:nameLen])
+		b = b[nameLen:]
+		if len(b) < 2 {
+			return nil, fmt.Errorf("payload too short for Identifier original name length")
+		}
+		origNameLen := int(binary.BigEndian.Uint16(b[:2]))
+		b = b[2:]
+		if len(b) < origNameLen {
+			return nil, fmt.Errorf("payload too short for Identifier original name")
+		}
+		origName := string(b[:origNameLen])
+		return Identifier{
+			Name:         name,
+			OriginalName: origName,
+			OriginalPos:  pos,
+		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported hint payload type flag: %d", h.Payload[0])
 	}
-	if err := gob.NewDecoder(bytes.NewReader(h.Payload[1:])).Decode(value); err != nil {
-		return nil, fmt.Errorf("failed to decode hint payload as %T: %w", value, err)
-	}
-	return reflect.ValueOf(value).Elem().Interface(), nil
 }
