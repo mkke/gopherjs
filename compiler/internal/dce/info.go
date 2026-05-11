@@ -1,6 +1,8 @@
 package dce
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"go/types"
 	"sort"
@@ -116,4 +118,91 @@ func (id *Info) getDeps() []string {
 	}
 	sort.Strings(deps)
 	return deps
+}
+
+// GobEncode implements encoding/gob.GobEncoder for archive caching.
+// Uses a compact binary format to avoid nested gob overhead.
+func (d Info) GobEncode() ([]byte, error) {
+	var buf bytes.Buffer
+
+	// alive flag
+	if d.alive {
+		buf.WriteByte(1)
+	} else {
+		buf.WriteByte(0)
+	}
+
+	// objectFilter and methodFilter as length-prefixed strings
+	for _, s := range []string{d.objectFilter, d.methodFilter} {
+		var lb [4]byte
+		binary.LittleEndian.PutUint32(lb[:], uint32(len(s)))
+		buf.Write(lb[:])
+		buf.WriteString(s)
+	}
+
+	// deps as count + sorted strings
+	deps := d.getDeps()
+	var lb [4]byte
+	binary.LittleEndian.PutUint32(lb[:], uint32(len(deps)))
+	buf.Write(lb[:])
+	for _, dep := range deps {
+		binary.LittleEndian.PutUint32(lb[:], uint32(len(dep)))
+		buf.Write(lb[:])
+		buf.WriteString(dep)
+	}
+	return buf.Bytes(), nil
+}
+
+// GobDecode implements encoding/gob.GobDecoder for archive caching.
+func (d *Info) GobDecode(data []byte) error {
+	if len(data) < 1 {
+		return fmt.Errorf("dce.Info: empty data")
+	}
+	r := bytes.NewReader(data)
+
+	// alive flag
+	b, _ := r.ReadByte()
+	d.alive = b == 1
+
+	// objectFilter and methodFilter
+	readStr := func() (string, error) {
+		var lb [4]byte
+		if _, err := r.Read(lb[:]); err != nil {
+			return "", err
+		}
+		n := binary.LittleEndian.Uint32(lb[:])
+		s := make([]byte, n)
+		if _, err := r.Read(s); err != nil {
+			return "", err
+		}
+		return string(s), nil
+	}
+
+	var err error
+	d.objectFilter, err = readStr()
+	if err != nil {
+		return err
+	}
+	d.methodFilter, err = readStr()
+	if err != nil {
+		return err
+	}
+
+	// deps
+	var lb [4]byte
+	if _, err := r.Read(lb[:]); err != nil {
+		return err
+	}
+	count := binary.LittleEndian.Uint32(lb[:])
+	if count > 0 {
+		d.deps = make(map[string]struct{}, count)
+		for i := uint32(0); i < count; i++ {
+			dep, err := readStr()
+			if err != nil {
+				return err
+			}
+			d.deps[dep] = struct{}{}
+		}
+	}
+	return nil
 }

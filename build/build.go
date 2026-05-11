@@ -763,7 +763,7 @@ func (p *PackageData) InstallPath() (string, error) {
 type Session struct {
 	options    *Options
 	xctx       XContext
-	buildCache cache.Cache
+	buildCache *cache.BuildCache
 
 	// importPaths is a map of the resolved import paths given the
 	// source directory (first key) and the unresolved import path (second key).
@@ -784,6 +784,10 @@ type Session struct {
 	// The files in these sources haven't been sorted nor simplified yet.
 	sources map[string]*sources.Sources
 
+	// srcModTimes tracks the effective source modification time per package,
+	// propagated through dependencies. Used for archive cache invalidation.
+	srcModTimes map[string]time.Time
+
 	// Binary archives produced during the current session and assumed to be
 	// up to date with input sources and dependencies. In the -w ("watch") mode
 	// must be cleared upon entering watching.
@@ -800,6 +804,7 @@ func NewSession(options *Options) (*Session, error) {
 		importPaths:      make(map[string]map[string]string),
 		packages:         make(map[string]*PackageData),
 		sources:          make(map[string]*sources.Sources),
+		srcModTimes:      make(map[string]time.Time),
 		UpToDateArchives: make(map[string]*compiler.Archive),
 	}
 	s.xctx = NewBuildContext(s.InstallSuffix(), s.options.BuildTags)
@@ -810,14 +815,9 @@ func NewSession(options *Options) (*Session, error) {
 		return nil, err
 	}
 
-	// If the cache is enabled, initialize the build cache.
+	// If the cache is enabled, initialize the build cache for compiled archives.
 	// Disable caching by leaving buildCache set to nil.
-	//
-	// TODO(grantnelson-wf): Currently the build cache is slower than
-	// parsing and augmenting the files, so we disable it for now.
-	// Re-enable it once the cache performance is improved.
-	const disableDefaultCache = true
-	if !s.options.NoCache && !disableDefaultCache {
+	if !s.options.NoCache {
 		s.buildCache = &cache.BuildCache{
 			GOOS:          env.GOOS,
 			GOARCH:        env.GOARCH,
@@ -1131,43 +1131,29 @@ func (s *Session) LoadPackages(pkg *PackageData) (*sources.Sources, error) {
 		pkg.SrcModTime = fileModTime
 	}
 
-	// Try to load the package from the build cache.
-	var srcs *sources.Sources
-	if s.buildCache != nil {
-		cachedSrcs := &sources.Sources{}
-		if s.buildCache.Load(cachedSrcs, pkg.ImportPath, pkg.SrcModTime) {
-			srcs = cachedSrcs
-		}
+	// Record the effective source modification time for archive cache invalidation.
+	s.srcModTimes[pkg.ImportPath] = pkg.SrcModTime
+
+	// Parse and augment the original files with overlay files.
+	fileSet := token.NewFileSet()
+	files, overlayJsFiles, err := parseAndAugment(s.xctx, pkg, pkg.IsTest, fileSet)
+	if err != nil {
+		return nil, err
+	}
+	embed, err := embedFiles(pkg, fileSet, files)
+	if err != nil {
+		return nil, err
+	}
+	if embed != nil {
+		files = append(files, embed)
 	}
 
-	// If the package was not found in the cache, build the package
-	// by parsing and augmenting the original files with overlay files.
-	if srcs == nil {
-		fileSet := token.NewFileSet()
-		files, overlayJsFiles, err := parseAndAugment(s.xctx, pkg, pkg.IsTest, fileSet)
-		if err != nil {
-			return nil, err
-		}
-		embed, err := embedFiles(pkg, fileSet, files)
-		if err != nil {
-			return nil, err
-		}
-		if embed != nil {
-			files = append(files, embed)
-		}
-
-		srcs = &sources.Sources{
-			ImportPath: pkg.ImportPath,
-			Dir:        pkg.Dir,
-			Files:      files,
-			FileSet:    fileSet,
-			JSFiles:    append(pkg.JSFiles, overlayJsFiles...),
-		}
-
-		// Store the built package in the cache for future use.
-		if s.buildCache != nil {
-			s.buildCache.Store(srcs, srcs.ImportPath, time.Now())
-		}
+	srcs := &sources.Sources{
+		ImportPath: pkg.ImportPath,
+		Dir:        pkg.Dir,
+		Files:      files,
+		FileSet:    fileSet,
+		JSFiles:    append(pkg.JSFiles, overlayJsFiles...),
 	}
 
 	// Add the sources to the session's sources map.
@@ -1233,6 +1219,23 @@ func (s *Session) compilePackage(srcs *sources.Sources, tContext *types.Context)
 		return archive, nil
 	}
 
+	// Try to load a cached compiled archive.
+	if s.buildCache != nil {
+		if srcModTime, ok := s.srcModTimes[srcs.ImportPath]; ok {
+			cached := &compiler.Archive{}
+			if s.buildCache.LoadArchive(cached, srcs.ImportPath, s.options.Minify, srcModTime) {
+				// Reconstruct fields available from the live Sources.
+				cached.ImportPath = srcs.ImportPath
+				cached.Package = srcs.Package
+				cached.FileSet = srcs.FileSet
+				cached.GoLinknames = srcs.GoLinknames
+				cached.IncJSCode = srcs.JSFiles
+				s.UpToDateArchives[srcs.ImportPath] = cached
+				return cached, nil
+			}
+		}
+	}
+
 	archive, err := compiler.Compile(srcs, tContext, s.options.Minify)
 	if err != nil {
 		return nil, err
@@ -1240,6 +1243,13 @@ func (s *Session) compilePackage(srcs *sources.Sources, tContext *types.Context)
 
 	if s.options.Verbose {
 		fmt.Println(srcs.ImportPath)
+	}
+
+	// Store the compiled archive in the cache.
+	if s.buildCache != nil {
+		if srcModTime, ok := s.srcModTimes[srcs.ImportPath]; ok {
+			s.buildCache.StoreArchive(archive, srcs.ImportPath, s.options.Minify, srcModTime)
+		}
 	}
 
 	s.UpToDateArchives[srcs.ImportPath] = archive

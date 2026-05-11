@@ -272,3 +272,83 @@ func (bc *BuildCache) commonKey() string {
 func (bc *BuildCache) packageKey(importPath string) string {
 	return path.Join("package", bc.commonKey(), importPath)
 }
+
+// archiveKey returns a cache key for a compiled archive, including the minify flag.
+func (bc *BuildCache) archiveKey(importPath string, minify bool) string {
+	suffix := "std"
+	if minify {
+		suffix = "min"
+	}
+	return path.Join("archive", suffix, bc.commonKey(), importPath)
+}
+
+// StoreArchive stores a compiled archive in the cache.
+func (bc *BuildCache) StoreArchive(c Cacheable, importPath string, minify bool, buildTime time.Time) bool {
+	if bc == nil {
+		return false
+	}
+	if bc.isTestPackage(importPath) {
+		return false
+	}
+
+	start := time.Now()
+	path := cachedPath(bc.archiveKey(importPath, minify))
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		log.Warningf("Failed to create build cache directory: %v", err)
+		return false
+	}
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path))
+	if err != nil {
+		log.Warningf("Failed to create temporary build cache file: %v", err)
+		return false
+	}
+	defer f.Close()
+	if err := bc.serialize(c, buildTime, f); err != nil {
+		log.Warningf("Failed to write cached archive %q: %v", importPath, err)
+		os.Remove(f.Name())
+		return false
+	}
+	f.Close()
+	if err := os.Rename(f.Name(), path); err != nil {
+		log.Warningf("Failed to rename cached archive %q to %q: %v", importPath, path, err)
+		return false
+	}
+	dur := time.Since(start).Round(time.Millisecond)
+	log.Infof("Stored cached archive %q as %q (%v).", importPath, path, dur)
+	return true
+}
+
+// LoadArchive loads a compiled archive from the cache.
+func (bc *BuildCache) LoadArchive(c Cacheable, importPath string, minify bool, srcModTime time.Time) bool {
+	if bc == nil {
+		return false
+	}
+	if bc.isTestPackage(importPath) {
+		return false
+	}
+
+	start := time.Now()
+	path := cachedPath(bc.archiveKey(importPath, minify))
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			log.Infof("No cached archive for %q at %q.", importPath, path)
+		} else {
+			log.Warningf("Failed to open cached archive for %q at %q: %v", importPath, path, err)
+		}
+		return false
+	}
+	defer f.Close()
+	buildTime, old, err := bc.deserialize(c, srcModTime, f)
+	if err != nil {
+		log.Warningf("Failed to read cached archive for %q at %q: %v", importPath, path, err)
+		return false
+	}
+	if old {
+		log.Infof("Found out-of-date archive for %q, built at %v.", importPath, buildTime)
+		return false
+	}
+	dur := time.Since(start).Round(time.Millisecond)
+	log.Infof("Loaded cached archive for %q, built at %v (%v).", importPath, buildTime, dur)
+	return true
+}

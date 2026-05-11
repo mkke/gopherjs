@@ -80,6 +80,44 @@ func (a Archive) String() string {
 	return fmt.Sprintf("compiler.Archive{%s}", a.ImportPath)
 }
 
+// Write serializes the compiled archive fields for caching.
+// Fields that can be reconstructed from Sources after PrepareAllSources
+// (Package, FileSet, GoLinknames, IncJSCode) are omitted.
+func (a *Archive) Write(encode func(any) error) error {
+	if err := encode(a.Name); err != nil {
+		return err
+	}
+	if err := encode(a.Imports); err != nil {
+		return err
+	}
+	if err := encode(a.Minified); err != nil {
+		return err
+	}
+	if err := encode(a.Declarations); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Read deserializes the compiled archive fields from cache.
+// The caller must populate Package, FileSet, GoLinknames, IncJSCode,
+// and ImportPath from the live Sources after loading.
+func (a *Archive) Read(decode func(any) error) error {
+	if err := decode(&a.Name); err != nil {
+		return err
+	}
+	if err := decode(&a.Imports); err != nil {
+		return err
+	}
+	if err := decode(&a.Minified); err != nil {
+		return err
+	}
+	if err := decode(&a.Declarations); err != nil {
+		return err
+	}
+	return nil
+}
+
 type Dependency struct {
 	Pkg    string
 	Type   string
